@@ -76,7 +76,7 @@ else
   trap 'rm -rf "$tmp"' EXIT
   curl -fsSL -o "$tmp/bin" "$base/$asset"
   curl -fsSL -o "$tmp/checksums.txt" "$base/checksums.txt"
-  expected="$(grep " $asset\$" "$tmp/checksums.txt" | awk '{print $1}')"
+  expected="$(awk -v a="$asset" '$2 == "*"a || $2 == a {print $1; exit}' "$tmp/checksums.txt")"
   if command -v shasum >/dev/null 2>&1; then
     actual="$(shasum -a 256 "$tmp/bin" | awk '{print $1}')"
   else
