@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -189,6 +190,14 @@ func emitContext(line string) {
 }
 
 func printShow(s *snapshot) {
+	models := s.Models
+	nameW := 0
+	for _, m := range models {
+		if l := len(truncate(m.ID, 28)); l > nameW {
+			nameW = l
+		}
+	}
+
 	if s.Status != nil {
 		st := s.Status
 		if st.DevPlan != "" {
@@ -197,45 +206,85 @@ func printShow(s *snapshot) {
 				title += " (" + st.Cycle + ")"
 			}
 			if st.Cancelled {
-				title += " CANCELLED"
+				title += " · cancelled"
+			}
+			if !st.ExpiresAt.IsZero() {
+				title += " · " + verb(st.Cancelled) + " " + st.ExpiresAt.Local().Format("Jan 2")
 			}
 			fmt.Println(title)
-			fmt.Printf("  Monthly credits  %10.2f / %-8.0f (%.2f left)\n", st.CreditsUsed, st.CreditsLimit, st.CreditsRemaining)
+			fmt.Printf("├─ Credits\n")
+			fmt.Printf("│  ├─ Monthly  %s %.2f / %.0f left\n",
+				bar(remaining(st.CreditsRemaining, st.CreditsLimit), 10), st.CreditsRemaining, st.CreditsLimit)
 			if st.PremiumWeeklyLimit > 0 {
 				resets := ""
 				if !st.PremiumWeekResets.IsZero() {
 					resets = fmt.Sprintf("  resets %s", st.PremiumWeekResets.Local().Format("Jan 2"))
 				}
-				fmt.Printf("  Premium week     %10.2f / %-8.2f%s\n", st.PremiumCreditsUsed, st.PremiumWeeklyLimit, resets)
-			}
-			if !st.ExpiresAt.IsZero() {
-				verb := "Renews"
-				if st.Cancelled {
-					verb = "Expires"
-				}
-				fmt.Printf("  %-16s %s\n", verb, st.ExpiresAt.Local().Format("Jan 2, 2006"))
+				fmt.Printf("│  ╰─ Premium  %s %.2f / %.2f left%s\n",
+					bar(remaining(st.PremiumWeeklyLimit-st.PremiumCreditsUsed, st.PremiumWeeklyLimit), 10),
+					st.PremiumWeeklyLimit-st.PremiumCreditsUsed, st.PremiumWeeklyLimit, resets)
 			}
 			fmt.Println()
 		}
 	}
+
 	if t := s.RangeTotals; t != nil {
-		fmt.Printf("%s usage: %s requests · %s in · %s out · %s cached · $%.2f cost · %d errors\n",
-			rangeLabel(s.Range), humanCount(t.Requests), humanTokens(t.InputTokens),
-			humanTokens(t.OutputTokens), humanTokens(t.CachedTokens+t.CacheWriteTokens), t.Cost, t.Errors)
-	}
-	if t := s.Other; t != nil && s.Range != "30d" {
-		fmt.Printf("Last 30 days:        %s requests · $%.2f cost\n", humanCount(t.Requests), t.Cost)
-	}
-	if len(s.Models) > 0 {
-		fmt.Println()
-		fmt.Printf("  %-32s %6s %8s %8s %9s\n", "Model", "Reqs", "In", "Out", "Cost")
-		for _, m := range s.Models {
-			fmt.Printf("  %-32s %6d %8s %8s %9s\n",
-				truncate(m.ID, 32), m.RequestCount, humanTokens(m.InputTokens),
-				humanTokens(m.OutputTokens), fmt.Sprintf("$%.2f", m.Cost))
+		line := fmt.Sprintf("├─ %s   %s reqs · $%.2f · %s tok",
+			s.Range, humanCount(t.Requests), t.Cost, humanTokens(t.InputTokens+t.OutputTokens))
+		if t.Errors > 0 {
+			if t.Errors == 1 {
+				line += " · 1 error"
+			} else {
+				line += fmt.Sprintf(" · %d errors", t.Errors)
+			}
+		}
+		fmt.Println(line)
+		for i, m := range models {
+			guide := "├─"
+			if i == len(models)-1 {
+				guide = "╰─"
+			}
+			maxCost := 0.0
+			for _, mm := range models {
+				if mm.Cost > maxCost {
+					maxCost = mm.Cost
+				}
+			}
+			fmt.Printf("│  %s %-*s  %s  $%.2f\n",
+				guide, nameW, truncate(m.ID, 28), bar(m.Cost/maxCost, 8), m.Cost)
 		}
 	}
+	if t := s.Other; t != nil && s.Range != "30d" {
+		fmt.Printf("╰─ 30d   %s reqs · $%.2f\n", humanCount(t.Requests), t.Cost)
+	} else if s.Range == "30d" {
+		fmt.Printf("╰─ 30d\n")
+	}
 	fmt.Printf("\n(as of %s)\n", s.FetchedAt.Local().Format("Jan 2, 2006 15:04"))
+}
+
+func verb(cancelled bool) string {
+	if cancelled {
+		return "expires"
+	}
+	return "renews"
+}
+
+func remaining(left, limit float64) float64 {
+	if limit <= 0 {
+		return 0
+	}
+	return left / limit
+}
+
+func bar(frac float64, width int) string {
+	if frac < 0 {
+		frac = 0
+	}
+	if frac > 1 {
+		frac = 1
+	}
+	f := int(math.Round(frac * float64(width)))
+	return strings.Repeat("█", f) + strings.Repeat("░", width-f)
 }
 
 func humanTokens(n int64) string {
