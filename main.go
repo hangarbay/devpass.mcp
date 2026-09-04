@@ -23,8 +23,6 @@ const (
 	defaultBaseURL   = "https://internal.llmgateway.io"
 	originURL        = "https://devpass.llmgateway.io"
 	sessionCookie    = "__Secure-better-auth.session_token"
-	defaultHookTTL   = 5 * time.Minute
-	defaultShowTTL   = 30 * time.Second
 	requestTimeout   = 15 * time.Second
 	defaultShowRange = "7d"
 )
@@ -35,19 +33,14 @@ func main() {
 
 func run() int {
 	args := os.Args[1:]
-	cmd := "hook"
+	cmd := "show"
 	if len(args) > 0 {
 		cmd = args[0]
 		args = args[1:]
 	}
 	switch cmd {
-	case "hook":
-		hookCmd()
-		return 0
 	case "show":
 		return showCmd(args)
-	case "refresh":
-		return refreshCmd()
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -62,44 +55,13 @@ func usage() {
 	fmt.Fprint(os.Stderr, `devpass-usage - LLM Gateway (DevPass) usage for Crush
 
 Usage:
-  devpass-usage hook              PreToolUse hook: emit {"decision":"allow","context":"..."} (throttled)
   devpass-usage show [--range R]  Print usage summary (R: 24h|7d|30d, default `+defaultShowRange+`)
-  devpass-usage refresh           Force refresh of cached usage and exit
 
 Credentials (first match wins):
   LLM_GATEWAY_SESSION_TOKEN       better-auth session token (30d)
   LLM_GATEWAY_EMAIL + LLM_GATEWAY_PASSWORD  auto sign-in fallback
   LLM_GATEWAY_BASE_URL            default `+defaultBaseURL+`
-
-Environment:
-  LLM_GATEWAY_USAGE_TTL           hook cache TTL (default `+defaultHookTTL.String()+`)
 `)
-}
-
-func hookCmd() {
-	_, _ = io.Copy(io.Discard, os.Stdin)
-
-	ttl := defaultHookTTL
-	if v := strings.TrimSpace(os.Getenv("LLM_GATEWAY_USAGE_TTL")); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d > 0 {
-			ttl = d
-		}
-	}
-
-	c := newClient()
-	snap := readSnapshot()
-	if snap != nil && time.Since(snap.FetchedAt) < ttl {
-		emitContext("")
-		return
-	}
-
-	fresh, err := c.fetchSnapshot(context.Background())
-	if err != nil {
-		emitContext("")
-		return
-	}
-	writeSnapshot(fresh)
-	emitContext(fresh.contextLine())
 }
 
 func showCmd(args []string) int {
@@ -114,34 +76,12 @@ func showCmd(args []string) int {
 	}
 
 	c := newClient()
-	snap := readSnapshot()
-	if snap == nil || time.Since(snap.FetchedAt) > defaultShowTTL || snap.Range != *rangeID {
-		fresh, err := c.fetchRange(context.Background(), *rangeID)
-		if err != nil {
-			if snap != nil && snap.Range == *rangeID {
-				fmt.Fprintln(os.Stderr, "warning: fetch failed, showing cached:", err)
-				printShow(snap)
-				return 0
-			}
-			fmt.Fprintln(os.Stderr, "error:", err)
-			return 1
-		}
-		writeSnapshot(fresh)
-		snap = fresh
-	}
-	printShow(snap)
-	return 0
-}
-
-func refreshCmd() int {
-	c := newClient()
-	snap, err := c.fetchSnapshot(context.Background())
+	snap, err := c.fetchRange(context.Background(), *rangeID)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	writeSnapshot(snap)
-	fmt.Println(snap.contextLine())
+	printShow(snap)
 	return 0
 }
 
@@ -155,38 +95,12 @@ type modelRow struct {
 }
 
 type snapshot struct {
-	FetchedAt   time.Time      `json:"fetchedAt"`
-	Range       string         `json:"range"`
-	Status      *planStatus    `json:"status,omitempty"`
-	RangeTotals *usageTotals   `json:"rangeTotals,omitempty"`
-	Other       *usageTotals   `json:"otherTotals,omitempty"`
-	Models      []modelRow     `json:"models,omitempty"`
-	ContextLine string         `json:"contextLine,omitempty"`
-	raw         map[string]any `json:"-"`
-}
-
-func (s *snapshot) contextLine() string {
-	if s == nil || s.Status == nil {
-		return ""
-	}
-	st := s.Status
-	if st.DevPlan == "" {
-		return ""
-	}
-	line := fmt.Sprintf("DevPass usage | credits_left: %.2f", st.CreditsRemaining)
-	if t := s.RangeTotals; t != nil {
-		line += fmt.Sprintf(" | spend_%s: $%.2f", s.Range, t.Cost)
-	}
-	return line
-}
-
-func emitContext(line string) {
-	out := map[string]string{"decision": "allow"}
-	if line != "" {
-		out["context"] = line
-	}
-	b, _ := json.Marshal(out)
-	fmt.Println(string(b))
+	FetchedAt   time.Time    `json:"fetchedAt"`
+	Range       string       `json:"range"`
+	Status      *planStatus  `json:"status,omitempty"`
+	RangeTotals *usageTotals `json:"rangeTotals,omitempty"`
+	Other       *usageTotals `json:"otherTotals,omitempty"`
+	Models      []modelRow   `json:"models,omitempty"`
 }
 
 func printShow(s *snapshot) {
@@ -483,8 +397,7 @@ func cacheDir() string {
 	return filepath.Join(base, "devpass-usage")
 }
 
-func snapshotPath() string { return filepath.Join(cacheDir(), "usage.json") }
-func sessionPath() string  { return filepath.Join(cacheDir(), "session.json") }
+func sessionPath() string { return filepath.Join(cacheDir(), "session.json") }
 
 type cachedSession struct {
 	Token     string    `json:"token"`
@@ -572,10 +485,6 @@ func (c *client) get(ctx context.Context, path string, query url.Values, out any
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
-func (c *client) fetchSnapshot(ctx context.Context) (*snapshot, error) {
-	return c.fetchRange(ctx, "24h")
-}
-
 func (c *client) fetchRange(ctx context.Context, rangeID string) (*snapshot, error) {
 	var st planStatus
 	if err := c.get(ctx, "/dev-plans/status", nil, &st); err != nil {
@@ -614,7 +523,6 @@ func (c *client) fetchRange(ctx context.Context, rangeID string) (*snapshot, err
 	if act2b := totalsOf(act2); act2b != nil {
 		s.Other = act2b
 	}
-	s.ContextLine = s.contextLine()
 	return s, nil
 }
 
@@ -653,27 +561,6 @@ func modelsOf(a activityResp) []modelRow {
 		out = append(out, *m)
 	}
 	return out
-}
-
-func readSnapshot() *snapshot {
-	b, err := os.ReadFile(snapshotPath())
-	if err != nil {
-		return nil
-	}
-	var s snapshot
-	if json.Unmarshal(b, &s) != nil {
-		return nil
-	}
-	return &s
-}
-
-func writeSnapshot(s *snapshot) {
-	_ = os.MkdirAll(cacheDir(), 0o700)
-	b, err := json.Marshal(s)
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(snapshotPath(), b, 0o600)
 }
 
 func localTimezone() string {

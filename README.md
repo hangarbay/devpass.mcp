@@ -15,13 +15,11 @@ the CLI and interpret the numbers. The CLI also works standalone.
 ## What you get
 
 - `devpass-usage show --range 24h|7d|30d` — plan credits, spend, per-model
-  breakdown
-- `devpass-usage refresh` — force a cache refresh
-- `devpass-usage hook` — (optional) emits a PreToolUse hook JSON payload that
-  injects a throttled usage line into agent tool results
+  breakdown, always fetched live from the API (no usage caching)
 
-Data comes straight from the DevPass dashboard API
-(`internal.llmgateway.io`), cached in `~/.cache/devpass-usage/`.
+Data comes straight from the DevPass dashboard API (`internal.llmgateway.io`)
+on every call. Only the auth session token is cached
+(`~/.cache/devpass-usage/session.json`).
 
 ## Install
 
@@ -71,23 +69,12 @@ automatically (cached with `0600` permissions).
 | `LLM_GATEWAY_EMAIL` / `LLM_GATEWAY_PASSWORD` | sign-in credentials |
 | `LLM_GATEWAY_SESSION_TOKEN` | existing session token (takes precedence) |
 | `LLM_GATEWAY_BASE_URL` | override API base (default `https://internal.llmgateway.io`) |
-| `LLM_GATEWAY_USAGE_TTL` | hook cache TTL (default `5m`) |
 
 ## Using with Crush
 
 Once installed, the skill appears as `user:devpass-usage`. Just ask:
 
 > how much of my DevPass quota is left?
-
-## Optional: PreToolUse hook (Crush)
-
-To surface a one-line usage summary periodically, add this to your `crushrc`:
-
-```bash
-hook add PreToolUse --command "$HOME/.local/bin/devpass-usage hook" --name devpass-usage
-```
-
-The hook injects at most one line per TTL window and never blocks tools.
 
 ## License
 
