@@ -1,5 +1,9 @@
 # devpass-usage.skill
 
+<p align="center">
+  <img src="docs/demo.gif" alt="devpass-usage demo" width="720">
+</p>
+
 DevPass (by LLM Gateway) usage, spend, and credits from the terminal, packaged
 as an agent skill for [Crush](https://github.com/charmbracelet/crush),
 [Claude Code](https://claude.com/claude-code), and any other agent that reads
