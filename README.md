@@ -21,12 +21,20 @@ Data comes straight from the DevPass dashboard API
 
 ## Install
 
-Requires [Go](https://go.dev/dl).
+No toolchain needed — `install.sh` downloads a prebuilt binary from GitHub
+Releases (macOS and Linux, amd64/arm64), verifies its checksum, and installs
+the skill for both agents:
 
 ```sh
 git clone https://github.com/hangarbay/devpass-usage.skill
 cd devpass-usage.skill
-./install.sh
+./install.sh          # pin a version: ./install.sh v0.1.0
+```
+
+Build from source instead (requires [Go](https://go.dev/dl)):
+
+```sh
+./install.sh --build
 ```
 
 This builds the CLI to `~/.local/bin/devpass-usage` and installs the skill to:
@@ -34,7 +42,7 @@ This builds the CLI to `~/.local/bin/devpass-usage` and installs the skill to:
 - `~/.config/crush/skills/devpass-usage` (Crush)
 - `~/.claude/skills/devpass-usage` (Claude Code)
 
-Binary only:
+Binary only (requires Go, installs to `$GOPATH/bin`):
 
 ```sh
 go install github.com/hangarbay/devpass-usage.skill@latest
