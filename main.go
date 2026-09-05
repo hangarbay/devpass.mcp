@@ -13,10 +13,14 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+	_ "time/tzdata"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
@@ -41,6 +45,8 @@ func run() int {
 	switch cmd {
 	case "show":
 		return showCmd(args)
+	case "serve":
+		return serveCmd(args)
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -56,6 +62,7 @@ func usage() {
 
 Usage:
   devpass-usage show [--range R]  Print usage summary (R: 24h|7d|30d, default `+defaultShowRange+`)
+  devpass-usage serve             Run the MCP stdio server (tool: show_usage)
 
 Credentials (first match wins):
   LLM_GATEWAY_SESSION_TOKEN       better-auth session token (30d)
@@ -81,7 +88,7 @@ func showCmd(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1
 	}
-	printShow(snap)
+	renderShow(os.Stdout, snap)
 	return 0
 }
 
@@ -103,7 +110,61 @@ type snapshot struct {
 	Models      []modelRow   `json:"models,omitempty"`
 }
 
-func printShow(s *snapshot) {
+func serveCmd(args []string) int {
+	if len(args) > 0 {
+		fmt.Fprintf(os.Stderr, "unknown argument %q (serve takes no flags)\n", args[0])
+		return 2
+	}
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "devpass-usage",
+		Title:   "DevPass Usage",
+		Version: serverVersion(),
+	}, nil)
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "show_usage",
+		Description: "Fetch live LLM Gateway DevPass usage: plan credits remaining (monthly and premium weekly), spend and request counts for a time range, and a per-model cost breakdown. Pick the range from the question: 24h for today, 7d for this week, 30d for this cycle. Credentials come from the LLM_GATEWAY_* environment variables.",
+	}, showUsage)
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+type showArgs struct {
+	Range string `json:"range,omitempty" jsonschema:"usage range: 24h, 7d or 30d (default 7d)"`
+}
+
+func showUsage(ctx context.Context, _ *mcp.CallToolRequest, args showArgs) (*mcp.CallToolResult, any, error) {
+	r := strings.TrimSpace(args.Range)
+	if r == "" {
+		r = defaultShowRange
+	}
+	if !validRange(r) {
+		return nil, nil, fmt.Errorf("invalid range %q: use 24h, 7d or 30d", r)
+	}
+	snap, err := newClient().fetchRange(ctx, r)
+	if err != nil {
+		return nil, nil, err
+	}
+	var buf bytes.Buffer
+	renderShow(&buf, snap)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: buf.String()}}}, nil, nil
+}
+
+func serverVersion() string {
+	if serverVersionOverride != "" {
+		return serverVersionOverride
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
+}
+
+var serverVersionOverride = ""
+
+func renderShow(w io.Writer, s *snapshot) {
 	models := s.Models
 	nameW := 0
 	for _, m := range models {
@@ -125,20 +186,20 @@ func printShow(s *snapshot) {
 			if !st.ExpiresAt.IsZero() {
 				title += " · " + verb(st.Cancelled) + " " + st.ExpiresAt.Local().Format("Jan 2")
 			}
-			fmt.Println(title)
-			fmt.Printf("├─ Credits\n")
-			fmt.Printf("│  ├─ Monthly  %s %.2f / %.0f left\n",
+			fmt.Fprintln(w, title)
+			fmt.Fprintf(w, "├─ Credits\n")
+			fmt.Fprintf(w, "│  ├─ Monthly  %s %.2f / %.0f left\n",
 				bar(remaining(st.CreditsRemaining, st.CreditsLimit), 10), st.CreditsRemaining, st.CreditsLimit)
 			if st.PremiumWeeklyLimit > 0 {
 				resets := ""
 				if !st.PremiumWeekResets.IsZero() {
 					resets = fmt.Sprintf("  resets %s", st.PremiumWeekResets.Local().Format("Jan 2"))
 				}
-				fmt.Printf("│  ╰─ Premium  %s %.2f / %.2f left%s\n",
+				fmt.Fprintf(w, "│  ╰─ Premium  %s %.2f / %.2f left%s\n",
 					bar(remaining(st.PremiumWeeklyLimit-st.PremiumCreditsUsed, st.PremiumWeeklyLimit), 10),
 					st.PremiumWeeklyLimit-st.PremiumCreditsUsed, st.PremiumWeeklyLimit, resets)
 			}
-			fmt.Println()
+			fmt.Fprintln(w)
 		}
 	}
 
@@ -152,7 +213,7 @@ func printShow(s *snapshot) {
 				line += fmt.Sprintf(" · %d errors", t.Errors)
 			}
 		}
-		fmt.Println(line)
+		fmt.Fprintln(w, line)
 		for i, m := range models {
 			guide := "├─"
 			if i == len(models)-1 {
@@ -164,16 +225,16 @@ func printShow(s *snapshot) {
 					maxCost = mm.Cost
 				}
 			}
-			fmt.Printf("│  %s %-*s  %s  $%.2f\n",
+			fmt.Fprintf(w, "│  %s %-*s  %s  $%.2f\n",
 				guide, nameW, truncate(m.ID, 28), bar(m.Cost/maxCost, 8), m.Cost)
 		}
 	}
 	if t := s.Other; t != nil && s.Range != "30d" {
-		fmt.Printf("╰─ 30d   %s reqs · $%.2f\n", humanCount(t.Requests), t.Cost)
+		fmt.Fprintf(w, "╰─ 30d   %s reqs · $%.2f\n", humanCount(t.Requests), t.Cost)
 	} else if s.Range == "30d" {
-		fmt.Printf("╰─ 30d\n")
+		fmt.Fprintf(w, "╰─ 30d\n")
 	}
-	fmt.Printf("\n(as of %s)\n", s.FetchedAt.Local().Format("Jan 2, 2006 15:04"))
+	fmt.Fprintf(w, "\n(as of %s)\n", s.FetchedAt.Local().Format("Jan 2, 2006 15:04"))
 }
 
 func verb(cancelled bool) string {

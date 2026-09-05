@@ -1,25 +1,16 @@
 #!/usr/bin/env bash
-# Install devpass-usage: downloads the release binary and installs the skill
-# for SKILL.md-compatible agents (Crush, Claude Code).
+# Install devpass-usage: downloads the release binary. The binary is both a
+# CLI and an MCP stdio server (run `devpass-usage serve`).
 #
 # One-liner (no clone needed):
-#   curl -fsSL https://raw.githubusercontent.com/hangarbay/devpass-usage.skill/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/hangarbay/devpass.mcp/main/install.sh | bash
 #
 # Inside a clone, --build compiles from source instead of downloading.
 set -u
 
-REPO="hangarbay/devpass-usage.skill"
+REPO="hangarbay/devpass.mcp"
 BIN_DIR="$HOME/.local/bin"
 BIN="$BIN_DIR/devpass-usage"
-SKILL_NAME="devpass-usage"
-SKILL_REL="skills/$SKILL_NAME/SKILL.md"
-
-MODE="remote"
-script_dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
-if [ -f "$script_dir/$SKILL_REL" ]; then
-  MODE="local"
-  cd "$script_dir" || exit 1
-fi
 
 os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 case "$os" in darwin | linux) ;; *)
@@ -46,11 +37,6 @@ if [ "$arg" = "--build" ]; then
 elif [ -n "$arg" ]; then
   version="$arg"
 fi
-if [ "$build" = 1 ] && [ "$MODE" != "local" ]; then
-  echo "error: --build requires a clone of the repo" >&2
-  exit 1
-fi
-
 if [ "$build" = 1 ]; then
   echo "==> Building from source"
   command -v go >/dev/null 2>&1 || {
@@ -95,19 +81,6 @@ else
   echo "    $BIN ($version, ${os}/${arch})"
 fi
 
-echo "==> Installing skills"
-skill_ref="${version:-main}"
-for dest in "$HOME/.config/crush/skills" "$HOME/.claude/skills"; do
-  mkdir -p "$dest/$SKILL_NAME"
-  rm -f "$dest/$SKILL_NAME/SKILL.md"
-  if [ "$MODE" = "local" ]; then
-    cp -R "skills/$SKILL_NAME/." "$dest/$SKILL_NAME/"
-  else
-    curl -fsSL -o "$dest/$SKILL_NAME/SKILL.md" "https://raw.githubusercontent.com/$REPO/$skill_ref/$SKILL_REL"
-  fi
-  echo "    installed -> $dest/$SKILL_NAME"
-done
-
 echo "==> Checking credentials"
 if [ -n "${LLM_GATEWAY_SESSION_TOKEN:-}" ]; then
   echo "    using LLM_GATEWAY_SESSION_TOKEN"
@@ -132,3 +105,4 @@ case ":$PATH:" in
 esac
 
 echo "==> Done. Try: devpass-usage show --range 7d"
+echo "    For MCP clients: devpass-usage serve  (or use the Docker image)"
